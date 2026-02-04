@@ -368,7 +368,7 @@ with st.sidebar:
 
     model = st.selectbox(
         "AI Model",
-        options=["claude-sonnet-4-5-20250514", "claude-haiku-4-5-20251001"],
+        options=["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"],
         format_func=lambda x: "Sonnet 4.5 (Best Quality ~$2-5/book)" if "sonnet" in x else "Haiku 4.5 (Budget ~$0.30-1.50/book)",
     )
 
