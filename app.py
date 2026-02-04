@@ -530,7 +530,7 @@ with st.sidebar:
 uploaded_file = st.file_uploader("📄 Upload English PDF", type=["pdf"])
 
 if uploaded_file:
-    # Re-extract on range change
+    # Re-extract on range change — ALWAYS reset translation state
     h = hashlib.md5(f"{uploaded_file.name}_{start_page}_{end_page}".encode()).hexdigest()
     if st.session_state.extract_hash != h:
         with st.spinner("📖 Extracting..."):
@@ -538,10 +538,17 @@ if uploaded_file:
             st.session_state.pages_data = pd
             st.session_state.total_pdf_pages = tp
             st.session_state.extract_hash = h
-            if st.session_state.current_batch > 0:
-                for k, v in DEFAULTS.items():
-                    if k in ("authenticated", "extract_hash", "total_pdf_pages", "pages_data"): continue
-                    st.session_state[k] = [] if isinstance(v, list) else v
+            # Always reset translation state for new page range
+            st.session_state.all_translated = []
+            st.session_state.batch_result = []
+            st.session_state.logs = []
+            st.session_state.current_batch = 0
+            st.session_state.translation_status = "idle"
+            st.session_state.total_cost = 0.0
+            st.session_state.total_input_tokens = 0
+            st.session_state.total_output_tokens = 0
+            st.session_state.page_progress = 0
+            st.rerun()  # Force clean re-render with new state
 
     pages_data = st.session_state.pages_data
     num_pages = len(pages_data)
