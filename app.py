@@ -1,7 +1,7 @@
 """
 ═══════════════════════════════════════════════════════════════
- অদম্য প্রেস — Book Translation Web App
- Cloud-hosted: Your team uploads PDF → gets Bangla DOCX back
+ অদম্য প্রেস — Book Translation Web App v2.0
+ Features: Batch Review, Pause/Resume, Download after each batch
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -15,8 +15,9 @@ import time
 import json
 from datetime import datetime
 from docx import Document as DocxDocument
-from docx.shared import Pt, Inches, RGBColor
+from docx.shared import Pt, Inches, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -28,278 +29,290 @@ st.set_page_config(
 )
 
 # ═══════════════════════════════════════════════════════════════
-# CONFIGURATION
+# CUSTOM CSS
 # ═══════════════════════════════════════════════════════════════
-CONFIG = {
-    "font_bangla": "Noto Sans Bengali",
-    "font_english": "Calibri",
-    "font_size_body": 11,
-    "font_size_heading": 16,
-    "font_size_quote": 11,
-    "page_margin_inches": 1.0,
-}
+st.markdown("""
+<style>
+    .stApp { background-color: #0a0f0d; color: #e0e0e0; }
+    .main-title { text-align: center; color: #4CAF50; font-size: 2.2rem; margin-bottom: 0; }
+    .sub-title { text-align: center; color: #888; font-size: 1rem; margin-top: 0; }
+    .stat-box {
+        background: #1a2520;
+        border: 1px solid #2d4a3e;
+        border-radius: 10px;
+        padding: 20px;
+        text-align: center;
+    }
+    .stat-number { font-size: 2.5rem; font-weight: bold; color: #4CAF50; }
+    .stat-label { font-size: 0.85rem; color: #888; }
+    .cost-box {
+        background: linear-gradient(135deg, #1a3a2a, #1a2520);
+        border: 1px solid #4CAF50;
+        border-radius: 10px;
+        padding: 15px 20px;
+        margin: 15px 0;
+        color: #c0e0cc;
+    }
+    .batch-review {
+        background: #1a2520;
+        border: 1px solid #2d4a3e;
+        border-radius: 10px;
+        padding: 20px;
+        margin: 15px 0;
+        max-height: 500px;
+        overflow-y: auto;
+    }
+    .success-box {
+        background: #1a3a2a;
+        border: 1px solid #4CAF50;
+        border-radius: 10px;
+        padding: 20px;
+        margin: 15px 0;
+    }
+    .log-entry { font-family: monospace; font-size: 0.85rem; }
+    div[data-testid="stExpander"] { border: 1px solid #2d4a3e; border-radius: 10px; }
+</style>
+""", unsafe_allow_html=True)
 
-SYSTEM_PROMPT = """You are a professional English-to-Bangla book translator for অদম্য প্রেস (Odommo Press), specializing in reader-friendly translations for Bangladeshi readers.
+# ═══════════════════════════════════════════════════════════════
+# TRANSLATION SYSTEM PROMPT
+# ═══════════════════════════════════════════════════════════════
+SYSTEM_PROMPT = """You are a professional English-to-Bangla book translator for অদম্য প্রেস (Odommo Press).
 
 ## TRANSLATION RULES
 
 ### Language Priority: Reader-Friendly First
-The goal is MAXIMUM READABILITY for Bangladeshi readers. Use whichever language makes each word/phrase easiest to understand:
+Use whichever language makes each word/phrase easiest to understand for Bangladeshi readers:
 
-- **Use English** when the English word is more commonly understood or avoids unnecessarily complex Bangla. Examples: Focus, Energy, Goal, Priority, Distraction, Pattern, Reflect, Productivity, Environment, Routine, Mindset, Personality, Confidence, Resilience, Accountability, Motivation, Discipline, Process, Comfort Zone, Trigger, Emotion, Stress, Balance, Relationship, Communication, Trust, Support, Challenge, Growth, etc.
-- **Use Bangla** for sentence structure, connectors, verbs (করুন, বুঝুন, তৈরি করুন, etc.), common everyday words, and emotional/descriptive language.
-- **Use English** for all technical/business terms widely used in Bangladesh.
-- **Use English** for proper nouns.
+- **Use English** when the English word is more commonly understood: Focus, Energy, Goal, Priority, Distraction, Pattern, Reflect, Productivity, Environment, Routine, Mindset, Personality, Confidence, Resilience, Accountability, Motivation, Discipline, Process, Comfort Zone, Trigger, Emotion, Stress, Balance, Relationship, Communication, Trust, Support, Challenge, Growth, Leadership, Strategy, Marketing, Brand, etc.
+- **Use Bangla** for sentence structure, connectors, verbs (করুন, বুঝুন, তৈরি করুন), common everyday words, and emotional/descriptive language.
 - **AVOID** forcing hard/complex Bangla. Use "Distraction" not "বিক্ষিপ্ততা", "Resilience" not "স্থিতিস্থাপকতা", "Productivity" not "উৎপাদনশীলতা".
-- Translate for MEANING, not word-by-word.
-- Sentences must sound natural when read aloud.
 
-### Output Format
-Return ONLY the translation in this exact structured format. Do NOT add any commentary.
+### Formatting
+- Page marker: === পৃষ্ঠা [Bangla numeral] === at start of each page
+- Bangla numerals: ০১২৩৪৫৬৭৮৯
+- Numbered lists: ১. ২. ৩.
+- Quotes: "বাংলা অনুবাদ" — Author Name
+- Preserve ALL bold (**text**), italic (*text*), headings (#), and structure exactly
+- Keep paragraph breaks as in original
 
+### OUTPUT FORMAT
 For each page, output:
 
----PAGE_START [page_number]---
-HEADING: [Translated chapter heading]
-HEADING_EN: [Original English heading]
-QUOTE: [Translated quote if present, or leave empty]
-BODY: [Translated body paragraph - opening]
-ITEMS:
-[bangla_number]. **[Bold part]** [Rest of item]
-...
-CLOSING: [Translated closing paragraph]
----PAGE_END---
+=== পৃষ্ঠা [number in Bangla] ===
 
-### Bangla Numerals
-Always use: ১ ২ ৩ ৪ ৫ ৬ ৭ ৮ ৯ ০
-"""
+[translated content preserving all formatting]
 
+---
+
+Translate ALL pages given. Do not skip any page. Do not add commentary."""
+
+# ═══════════════════════════════════════════════════════════════
+# VALID MODEL STRINGS (UPDATED)
+# ═══════════════════════════════════════════════════════════════
+MODELS = {
+    "Sonnet 4.5 (Best Quality)": "claude-sonnet-4-5-20250929",
+    "Haiku 4.5 (Fastest/Cheapest)": "claude-haiku-4-5-20251001",
+}
 
 # ═══════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════
 
-def extract_pages_from_bytes(pdf_bytes, start_page=1, end_page=None):
-    """Extract text from PDF bytes."""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    total = len(doc)
-    if end_page is None or end_page > total:
-        end_page = total
+def extract_pages(pdf_file, start_page, end_page):
+    """Extract text from PDF pages."""
+    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
     pages = []
-    for i in range(start_page - 1, end_page):
-        text = doc[i].get_text().strip()
+    total = doc.page_count
+    actual_end = min(end_page, total)
+    for i in range(start_page - 1, actual_end):
+        page = doc[i]
+        text = page.get_text("text").strip()
         if text:
             pages.append((i + 1, text))
     doc.close()
     return pages, total
 
 
-def translate_batch(client, model, pages):
-    """Send pages to Claude API for translation."""
-    user_content = "Translate the following pages from English to Reader-Friendly Bangla:\n\n"
-    for page_num, text in pages:
-        user_content += f"=== PAGE {page_num} ===\n{text}\n\n"
+def translate_batch(client, model, batch_pages):
+    """Send a batch of pages to Claude API for translation."""
+    pages_text = ""
+    for page_num, text in batch_pages:
+        pages_text += f"\n\n--- PAGE {page_num} ---\n{text}"
 
     response = client.messages.create(
         model=model,
-        max_tokens=4096,
+        max_tokens=8192,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}]
+        messages=[{
+            "role": "user",
+            "content": f"Translate these {len(batch_pages)} pages to Bangla. Maintain exact page-by-page structure:\n{pages_text}"
+        }]
     )
 
-    result = ""
-    for block in response.content:
-        if block.type == "text":
-            result += block.text
+    raw_text = response.content[0].text
+    input_tokens = response.usage.input_tokens
+    output_tokens = response.usage.output_tokens
 
-    input_t = response.usage.input_tokens
-    output_t = response.usage.output_tokens
-
-    # Cost calculation based on model
-    if "haiku" in model:
-        cost = (input_t * 0.0008 + output_t * 0.004) / 1000
+    # Cost calculation
+    if "sonnet" in model:
+        cost = (input_tokens * 3.0 / 1_000_000) + (output_tokens * 15.0 / 1_000_000)
     else:
-        cost = (input_t * 0.003 + output_t * 0.015) / 1000
+        cost = (input_tokens * 0.80 / 1_000_000) + (output_tokens * 4.0 / 1_000_000)
 
-    return result, input_t, output_t, cost
+    return raw_text, input_tokens, output_tokens, cost
 
 
 def parse_translation(raw_text):
-    """Parse structured translation output."""
+    """Parse translated text into page-by-page sections."""
     pages = []
-    page_blocks = re.split(r'---PAGE_START\s*\[?(\d+)\]?---', raw_text)
-    i = 1
-    while i < len(page_blocks) - 1:
-        page_num = int(page_blocks[i])
-        content = re.sub(r'---PAGE_END---', '', page_blocks[i + 1]).strip()
+    # Split by page markers
+    pattern = r'===\s*পৃষ্ঠা\s*([০-৯]+)\s*==='
+    parts = re.split(pattern, raw_text)
 
-        page_data = {
-            "page_num": page_num,
-            "heading": "", "heading_en": "", "quote": "",
-            "body": "", "items": [], "closing": "", "raw": content,
-        }
+    if len(parts) > 1:
+        for i in range(1, len(parts), 2):
+            page_num = parts[i]
+            content = parts[i + 1].strip() if i + 1 < len(parts) else ""
+            if content:
+                # Remove trailing --- separator
+                content = re.sub(r'\n---\s*$', '', content).strip()
+                pages.append({"page": page_num, "content": content})
+    else:
+        # Fallback: treat entire text as one page
+        pages.append({"page": "?", "content": raw_text.strip()})
 
-        for field, pattern in [
-            ("heading", r'HEADING:\s*(.+?)(?=\n(?:HEADING_EN|QUOTE|BODY|ITEMS|CLOSING|$))'),
-            ("heading_en", r'HEADING_EN:\s*(.+?)(?=\n(?:QUOTE|BODY|ITEMS|CLOSING|$))'),
-            ("quote", r'QUOTE:\s*(.+?)(?=\n(?:BODY|ITEMS|CLOSING|$))'),
-            ("body", r'BODY:\s*(.+?)(?=\n(?:ITEMS|CLOSING|$))'),
-            ("closing", r'CLOSING:\s*(.+?)$'),
-        ]:
-            m = re.search(pattern, content, re.DOTALL)
-            if m:
-                page_data[field] = m.group(1).strip()
-
-        items_m = re.search(r'ITEMS:\s*(.+?)(?=\n(?:CLOSING|$))', content, re.DOTALL)
-        if items_m:
-            page_data["items"] = re.findall(r'[১২৩৪৫৬৭৮৯০]+\.\s*(.+)', items_m.group(1))
-
-        pages.append(page_data)
-        i += 2
-
-    if not pages and raw_text.strip():
-        pages.append({
-            "page_num": 0, "heading": "", "heading_en": "",
-            "quote": "", "body": raw_text.strip(),
-            "items": [], "closing": "", "raw": raw_text.strip(),
-        })
     return pages
 
 
-def build_docx(translated_pages, title="", author=""):
-    """Build a formatted DOCX from translated pages."""
+def bangla_to_int(bangla_str):
+    """Convert Bangla numeral string to integer."""
+    mapping = {'০': '0', '১': '1', '২': '2', '৩': '3', '৪': '4',
+               '৫': '5', '৬': '6', '৭': '7', '৮': '8', '৯': '9'}
+    result = ""
+    for ch in str(bangla_str):
+        result += mapping.get(ch, ch)
+    try:
+        return int(result)
+    except ValueError:
+        return 0
+
+
+def int_to_bangla(num):
+    """Convert integer to Bangla numeral string."""
+    mapping = {'0': '০', '1': '১', '2': '২', '3': '৩', '4': '৪',
+               '5': '৫', '6': '৬', '7': '৭', '8': '৮', '9': '৯'}
+    result = ""
+    for ch in str(num):
+        result += mapping.get(ch, ch)
+    return result
+
+
+def build_docx(translated_pages, book_title, book_author):
+    """Build a DOCX file from translated pages."""
     doc = DocxDocument()
 
-    # Page setup
-    section = doc.sections[0]
-    section.page_width = Inches(8.5)
-    section.page_height = Inches(11)
-    margin = Inches(CONFIG["page_margin_inches"])
-    section.top_margin = margin
-    section.bottom_margin = margin
-    section.left_margin = margin
-    section.right_margin = margin
-
-    # Header
-    hp = section.header.paragraphs[0] if section.header.paragraphs else section.header.add_paragraph()
-    hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run = hp.add_run(title or "বাংলা অনুবাদ")
-    run.font.size = Pt(8)
-    run.font.color.rgb = RGBColor(153, 153, 153)
-    run.font.name = CONFIG["font_bangla"]
-
-    # Footer
-    fp = section.footer.paragraphs[0] if section.footer.paragraphs else section.footer.add_paragraph()
-    fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = fp.add_run(f"{author} — বাংলা অনুবাদ | অদম্য প্রেস")
-    run.font.size = Pt(8)
-    run.font.color.rgb = RGBColor(153, 153, 153)
-    run.font.name = CONFIG["font_bangla"]
-
-    # Style
+    # Set default font
     style = doc.styles['Normal']
-    style.font.name = CONFIG["font_bangla"]
-    style.font.size = Pt(CONFIG["font_size_body"])
-    style.paragraph_format.space_after = Pt(6)
-    style.paragraph_format.line_spacing = 1.15
+    font = style.font
+    font.name = 'Noto Sans Bengali'
+    font.size = Pt(11)
 
-    bangla_nums = ['১','২','৩','৪','৫','৬','৭','৮','৯','১০',
-                   '১১','১২','১৩','১৪','১৫','১৬','১৭','১৮','১৯','২০']
+    # Set margins
+    for section in doc.sections:
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin = Inches(1)
+        section.right_margin = Inches(1)
 
-    for idx, pd in enumerate(translated_pages):
-        if idx > 0:
-            doc.add_page_break()
+    # Title page
+    title_para = doc.add_paragraph()
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_para.space_before = Pt(100)
+    run = title_para.add_run(book_title)
+    run.font.size = Pt(24)
+    run.bold = True
+    run.font.name = 'Noto Sans Bengali'
 
-        if pd.get("heading"):
-            p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.space_before = Pt(12)
-            p.space_after = Pt(6)
-            r = p.add_run(pd["heading"])
-            r.font.name = CONFIG["font_bangla"]
-            r.font.size = Pt(CONFIG["font_size_heading"])
-            r.bold = True
+    author_para = doc.add_paragraph()
+    author_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = author_para.add_run(book_author)
+    run.font.size = Pt(14)
+    run.font.name = 'Noto Sans Bengali'
 
-        if pd.get("heading_en"):
-            p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.space_after = Pt(12)
-            r = p.add_run(f"({pd['heading_en']})")
-            r.font.size = Pt(10)
-            r.font.color.rgb = RGBColor(102, 102, 102)
-            r.font.name = CONFIG["font_english"]
+    press_para = doc.add_paragraph()
+    press_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    press_para.space_before = Pt(40)
+    run = press_para.add_run("অদম্য প্রেস")
+    run.font.size = Pt(12)
+    run.font.color.rgb = RGBColor(0x4C, 0xAF, 0x50)
+    run.font.name = 'Noto Sans Bengali'
 
-        if pd.get("quote"):
-            p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.space_before = Pt(8)
-            p.space_after = Pt(12)
-            qt = pd["quote"].strip('""\u201C\u201D')
-            r = p.add_run(f"\u201C{qt}\u201D")
-            r.font.name = CONFIG["font_bangla"]
-            r.font.size = Pt(CONFIG["font_size_quote"])
-            r.italic = True
-
-        if pd.get("body"):
-            p = doc.add_paragraph()
-            p.space_after = Pt(8)
-            r = p.add_run(pd["body"])
-            r.font.name = CONFIG["font_bangla"]
-
-        for j, item_text in enumerate(pd.get("items", [])):
-            p = doc.add_paragraph()
-            p.space_after = Pt(4)
-            num = bangla_nums[j] if j < len(bangla_nums) else str(j+1)
-            bold_m = re.match(r'\*\*(.+?)\*\*\s*(.*)', item_text, re.DOTALL)
-            if bold_m:
-                r = p.add_run(f"{num}. {bold_m.group(1)}")
-                r.font.name = CONFIG["font_bangla"]
-                r.bold = True
-                r2 = p.add_run(f" {bold_m.group(2)}")
-                r2.font.name = CONFIG["font_bangla"]
-            else:
-                r = p.add_run(f"{num}. {item_text}")
-                r.font.name = CONFIG["font_bangla"]
-
-        if pd.get("closing"):
-            p = doc.add_paragraph()
-            p.space_before = Pt(8)
-            r = p.add_run(pd["closing"])
-            r.font.name = CONFIG["font_bangla"]
-
-        if not any([pd.get("heading"), pd.get("body"), pd.get("items"), pd.get("closing")]):
-            if pd.get("raw"):
-                for pt in pd["raw"].split("\n\n"):
-                    pt = pt.strip()
-                    if pt:
-                        p = doc.add_paragraph()
-                        r = p.add_run(pt)
-                        r.font.name = CONFIG["font_bangla"]
-
-    # End page
     doc.add_page_break()
-    for _ in range(6):
-        doc.add_paragraph()
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p.add_run("— সমাপ্ত —")
-    r.font.name = CONFIG["font_bangla"]
-    r.font.size = Pt(18)
-    r.bold = True
 
-    if title:
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        r = p.add_run(f"মূল বই: {title}")
-        r.font.name = CONFIG["font_bangla"]
-        r.font.size = Pt(12)
+    # Content pages
+    for page_data in translated_pages:
+        page_num = page_data["page"]
+        content = page_data["content"]
 
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p.add_run("বাংলা অনুবাদ সম্পন্ন | অদম্য প্রেস")
-    r.font.name = CONFIG["font_bangla"]
-    r.font.size = Pt(11)
+        # Page header
+        header_para = doc.add_paragraph()
+        header_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = header_para.add_run(f"পৃষ্ঠা {page_num}")
+        run.font.size = Pt(9)
+        run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+        run.font.name = 'Noto Sans Bengali'
 
+        # Process content line by line
+        lines = content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Heading detection
+            if line.startswith('# '):
+                p = doc.add_paragraph()
+                run = p.add_run(line[2:])
+                run.bold = True
+                run.font.size = Pt(16)
+                run.font.name = 'Noto Sans Bengali'
+                p.space_before = Pt(12)
+                p.space_after = Pt(6)
+            elif line.startswith('## '):
+                p = doc.add_paragraph()
+                run = p.add_run(line[3:])
+                run.bold = True
+                run.font.size = Pt(14)
+                run.font.name = 'Noto Sans Bengali'
+                p.space_before = Pt(10)
+                p.space_after = Pt(4)
+            elif line.startswith('### '):
+                p = doc.add_paragraph()
+                run = p.add_run(line[4:])
+                run.bold = True
+                run.font.size = Pt(12)
+                run.font.name = 'Noto Sans Bengali'
+                p.space_before = Pt(8)
+                p.space_after = Pt(4)
+            else:
+                p = doc.add_paragraph()
+                # Handle bold markers
+                parts = re.split(r'(\*\*.*?\*\*)', line)
+                for part in parts:
+                    if part.startswith('**') and part.endswith('**'):
+                        run = p.add_run(part[2:-2])
+                        run.bold = True
+                    else:
+                        run = p.add_run(part)
+                    run.font.size = Pt(11)
+                    run.font.name = 'Noto Sans Bengali'
+                p.paragraph_format.line_spacing = 1.15
+
+        # Page break between pages
+        doc.add_page_break()
+
+    # Save to buffer
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -307,233 +320,339 @@ def build_docx(translated_pages, title="", author=""):
 
 
 # ═══════════════════════════════════════════════════════════════
-# STREAMLIT UI
+# INITIALIZE SESSION STATE
 # ═══════════════════════════════════════════════════════════════
+if "all_translated" not in st.session_state:
+    st.session_state.all_translated = []
+if "current_batch" not in st.session_state:
+    st.session_state.current_batch = 0
+if "translation_status" not in st.session_state:
+    st.session_state.translation_status = "idle"  # idle, translating, reviewing, complete
+if "logs" not in st.session_state:
+    st.session_state.logs = []
+if "total_cost" not in st.session_state:
+    st.session_state.total_cost = 0.0
+if "total_input_tokens" not in st.session_state:
+    st.session_state.total_input_tokens = 0
+if "total_output_tokens" not in st.session_state:
+    st.session_state.total_output_tokens = 0
+if "pages_data" not in st.session_state:
+    st.session_state.pages_data = []
+if "batch_result" not in st.session_state:
+    st.session_state.batch_result = []
+if "num_batches" not in st.session_state:
+    st.session_state.num_batches = 0
 
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        text-align: center;
-        padding: 1rem 0;
-        border-bottom: 2px solid #e0e0e0;
-        margin-bottom: 2rem;
-    }
-    .main-header h1 {
-        color: #1a1a2e;
-        font-size: 2rem;
-    }
-    .main-header p {
-        color: #666;
-        font-size: 1rem;
-    }
-    .stProgress > div > div > div > div {
-        background-color: #4CAF50;
-    }
-    .cost-box {
-        background-color: #f0f9f0;
-        border: 1px solid #4CAF50;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 1rem 0;
-    }
-    .warning-box {
-        background-color: #fff9e6;
-        border: 1px solid #ffc107;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 1rem 0;
-    }
-</style>
-""", unsafe_allow_html=True)
 
-# Header
-st.markdown("""
-<div class="main-header">
-    <h1>📚 অদম্য প্রেস — Book Translator</h1>
-    <p>English → Reader-Friendly Bangla | Powered by Claude AI</p>
-</div>
-""", unsafe_allow_html=True)
+# ═══════════════════════════════════════════════════════════════
+# HEADER
+# ═══════════════════════════════════════════════════════════════
+st.markdown('<h1 class="main-title">📚 অদম্য প্রেস — Book Translator</h1>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">English → Bangla | Powered by Claude AI</p>', unsafe_allow_html=True)
+st.divider()
 
-# Sidebar
+# ═══════════════════════════════════════════════════════════════
+# SIDEBAR
+# ═══════════════════════════════════════════════════════════════
 with st.sidebar:
     st.header("⚙️ Settings")
 
+    # API Key
+    default_key = os.environ.get("ANTHROPIC_API_KEY", "")
     api_key = st.text_input(
-        "Anthropic API Key",
+        "🔑 Anthropic API Key",
+        value=default_key,
         type="password",
-        help="Get your key at console.anthropic.com",
-        value=os.environ.get("ANTHROPIC_API_KEY", ""),
+        help="Get from console.anthropic.com"
     )
 
-    model = st.selectbox(
-        "AI Model",
-        options=["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"],
-        format_func=lambda x: "Sonnet 4.5 (Best Quality ~$2-5/book)" if "sonnet" in x else "Haiku 4.5 (Budget ~$0.30-1.50/book)",
-    )
+    st.divider()
 
-    batch_size = st.slider("Pages per API call", 3, 10, 5,
-                           help="Lower = better quality, more API calls. 5 is recommended.")
+    # Model selection
+    model_choice = st.selectbox("🤖 Model", list(MODELS.keys()))
+    model = MODELS[model_choice]
 
     st.divider()
-    st.header("📖 Book Details")
-    book_title = st.text_input("Book Title", placeholder="e.g. Attitude Is Everything")
-    book_author = st.text_input("Author", placeholder="e.g. Harvard-Fiction KH")
+
+    # Book metadata
+    book_title = st.text_input("📖 Book Title (Bangla)", value="")
+    book_author = st.text_input("✍️ Author Name", value="")
 
     st.divider()
-    st.header("📄 Page Range")
+
+    # Page range
     col1, col2 = st.columns(2)
-    start_page = col1.number_input("Start Page", min_value=1, value=1)
-    end_page_input = col2.number_input("End Page (0 = all)", min_value=0, value=0)
+    with col1:
+        start_page = st.number_input("Start Page", min_value=1, value=1)
+    with col2:
+        end_page = st.number_input("End Page", min_value=1, value=100)
 
     st.divider()
-    st.markdown("**💡 Tips:**")
-    st.markdown("- Sonnet gives best quality for publishing")
-    st.markdown("- Haiku is good for drafts & previews")
-    st.markdown("- Batch size 3-5 gives best results")
-    st.markdown("- You can translate specific page ranges")
 
-# Main area
-uploaded_file = st.file_uploader(
-    "📂 Upload English PDF Book",
-    type=["pdf"],
-    help="Upload the English book in PDF format"
-)
+    # ⭐ BATCH SIZE SELECTION
+    batch_size = st.selectbox(
+        "📦 Review After Every",
+        [5, 10, 15, 20],
+        index=1,
+        help="Translation pauses after this many pages for your review"
+    )
+
+    st.divider()
+
+    # Reset button
+    if st.button("🔄 Reset Everything", use_container_width=True):
+        for key in ["all_translated", "current_batch", "translation_status", "logs",
+                     "total_cost", "total_input_tokens", "total_output_tokens",
+                     "pages_data", "batch_result", "num_batches"]:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.rerun()
+
+    st.divider()
+    st.markdown("""
+    **💰 Cost Guide:**
+
+    | Model | Per 100 pages |
+    |-------|:----------:|
+    | Sonnet 4.5 | ~$2-5 |
+    | Haiku 4.5 | ~$0.30-1.50 |
+    """)
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN AREA
+# ═══════════════════════════════════════════════════════════════
+
+# File upload
+uploaded_file = st.file_uploader("📄 Upload English PDF Book", type=["pdf"])
 
 if uploaded_file:
-    pdf_bytes = uploaded_file.read()
+    # Extract pages on first upload
+    if not st.session_state.pages_data:
+        with st.spinner("📖 Extracting pages..."):
+            pages_data, total_pdf_pages = extract_pages(uploaded_file, start_page, end_page)
+            st.session_state.pages_data = pages_data
+            st.session_state.total_pdf_pages = total_pdf_pages
 
-    # Extract and show info
-    pages, total_pages = extract_pages_from_bytes(pdf_bytes, 1, None)
-    end_page = end_page_input if end_page_input > 0 else total_pages
-
-    # Filter pages by range
-    pages_in_range = [(pn, txt) for pn, txt in pages if start_page <= pn <= end_page]
-    num_pages = len(pages_in_range)
+    pages_data = st.session_state.pages_data
+    num_pages = len(pages_data)
     num_batches = (num_pages + batch_size - 1) // batch_size
+    st.session_state.num_batches = num_batches
 
-    # Cost estimate
-    if "haiku" in model:
-        est_cost = (num_pages * 800 * 0.0008 + num_pages * 600 * 0.004) / 1000
+    # Cost estimation
+    if "sonnet" in model:
+        est_cost = num_pages * 0.0114
     else:
-        est_cost = (num_pages * 800 * 0.003 + num_pages * 600 * 0.015) / 1000
+        est_cost = num_pages * 0.0035
 
-    # Info display
+    # Stats display
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("📄 Total Pages", total_pages)
-    col2.metric("📑 Pages to Translate", num_pages)
-    col3.metric("📦 API Batches", num_batches)
-    col4.metric("💰 Est. Cost", f"${est_cost:.2f}")
+    with col1:
+        st.markdown(f'<div class="stat-box"><div class="stat-label">📄 Total Pages</div><div class="stat-number">{st.session_state.get("total_pdf_pages", "?")}</div></div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown(f'<div class="stat-box"><div class="stat-label">📑 Pages to Translate</div><div class="stat-number">{num_pages}</div></div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown(f'<div class="stat-box"><div class="stat-label">📦 Review Batches</div><div class="stat-number">{num_batches}</div></div>', unsafe_allow_html=True)
+    with col4:
+        st.markdown(f'<div class="stat-box"><div class="stat-label">💰 Est. Cost</div><div class="stat-number">${est_cost:.2f}</div></div>', unsafe_allow_html=True)
 
     st.markdown(f"""
     <div class="cost-box">
-        <strong>📊 Translation Summary:</strong> {num_pages} pages (Page {start_page}→{end_page}) in {num_batches} batches
-        using <strong>{'Sonnet 4.5' if 'sonnet' in model else 'Haiku 4.5'}</strong> ≈ <strong>${est_cost:.2f} USD</strong>
+        📊 <strong>Plan:</strong> {num_pages} pages → {num_batches} batches of {batch_size} pages each
+        | Model: <strong>{model_choice}</strong> | ⏸️ Pauses after every {batch_size} pages for review
     </div>
     """, unsafe_allow_html=True)
 
-    # Translate button
-    if st.button("🚀 Start Translation", type="primary", use_container_width=True):
-        if not api_key:
-            st.error("❌ Please enter your Anthropic API Key in the sidebar.")
+    # ═══════════════════════════════════════════════════════════
+    # TRANSLATION CONTROLS
+    # ═══════════════════════════════════════════════════════════
+
+    status = st.session_state.translation_status
+    current_batch = st.session_state.current_batch
+
+    # Progress bar
+    if current_batch > 0:
+        progress = current_batch / num_batches
+        st.progress(progress, text=f"Progress: {current_batch}/{num_batches} batches complete ({current_batch * batch_size} pages)")
+
+    # ─── START / CONTINUE BUTTON ───
+    if status in ["idle", "reviewing"]:
+        if current_batch >= num_batches:
+            st.session_state.translation_status = "complete"
         else:
-            try:
-                client = anthropic.Anthropic(api_key=api_key)
+            button_label = "🚀 Start Translation" if status == "idle" else f"▶️ Continue — Translate Batch {current_batch + 1}/{num_batches}"
 
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                log_area = st.empty()
-
-                all_translated = []
-                total_cost = 0.0
-                total_input_tokens = 0
-                total_output_tokens = 0
-                logs = []
-
-                for batch_idx in range(num_batches):
-                    b_start = batch_idx * batch_size
-                    b_end = min(b_start + batch_size, num_pages)
-                    batch_pages = pages_in_range[b_start:b_end]
-                    page_nums = [p[0] for p in batch_pages]
-
-                    progress = (batch_idx + 1) / num_batches
-                    progress_bar.progress(progress)
-                    status_text.markdown(f"**🔄 Translating Batch {batch_idx+1}/{num_batches}** — Pages {page_nums[0]}-{page_nums[-1]}...")
-
-                    try:
-                        raw, in_t, out_t, cost = translate_batch(client, model, batch_pages)
-                        parsed = parse_translation(raw)
-                        all_translated.extend(parsed)
-
-                        total_cost += cost
-                        total_input_tokens += in_t
-                        total_output_tokens += out_t
-
-                        logs.append(f"✅ Batch {batch_idx+1}: Pages {page_nums[0]}-{page_nums[-1]} — {len(parsed)} pages — ${cost:.4f}")
-                        log_area.code("\n".join(logs))
-
-                    except Exception as e:
-                        logs.append(f"❌ Batch {batch_idx+1}: Error — {str(e)}")
-                        log_area.code("\n".join(logs))
-                        st.warning(f"Batch {batch_idx+1} failed: {e}. Continuing...")
-
-                    # Rate limit delay
-                    if batch_idx < num_batches - 1:
-                        time.sleep(1)
-
-                progress_bar.progress(1.0)
-                status_text.markdown("**✅ Translation Complete!**")
-
-                # Build DOCX
-                if all_translated:
-                    status_text.markdown("**📄 Building DOCX document...**")
-                    docx_buffer = build_docx(all_translated, book_title, book_author)
-
-                    # Success summary
-                    st.success(f"""
-                    🎉 **Translation Complete!**
-                    - Pages translated: {len(all_translated)}
-                    - Total cost: ${total_cost:.4f} USD
-                    - Tokens: {total_input_tokens:,} input / {total_output_tokens:,} output
-                    """)
-
-                    # Download button
-                    filename = f"{book_title or uploaded_file.name.replace('.pdf','')}_Bangla.docx"
-                    st.download_button(
-                        label="📥 Download Bangla DOCX",
-                        data=docx_buffer,
-                        file_name=filename,
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        type="primary",
-                        use_container_width=True,
-                    )
+            if st.button(button_label, type="primary", use_container_width=True):
+                if not api_key:
+                    st.error("❌ Please enter your Anthropic API Key in the sidebar.")
                 else:
-                    st.error("No pages were translated successfully.")
+                    st.session_state.translation_status = "translating"
+                    st.rerun()
 
-            except anthropic.AuthenticationError:
-                st.error("❌ Invalid API key. Please check your Anthropic API key.")
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
+    # ─── TRANSLATING ───
+    if status == "translating":
+        batch_idx = st.session_state.current_batch
+        b_start = batch_idx * batch_size
+        b_end = min(b_start + batch_size, num_pages)
+        batch_pages = pages_data[b_start:b_end]
+        page_nums = [p[0] for p in batch_pages]
+
+        st.info(f"🔄 **Translating Batch {batch_idx + 1}/{num_batches}** — Pages {page_nums[0]}–{page_nums[-1]}...")
+
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+            raw, in_t, out_t, cost = translate_batch(client, model, batch_pages)
+            parsed = parse_translation(raw)
+
+            # Store results
+            st.session_state.all_translated.extend(parsed)
+            st.session_state.batch_result = parsed
+            st.session_state.total_cost += cost
+            st.session_state.total_input_tokens += in_t
+            st.session_state.total_output_tokens += out_t
+            st.session_state.current_batch += 1
+
+            log_entry = f"✅ Batch {batch_idx + 1}: Pages {page_nums[0]}–{page_nums[-1]} — {len(parsed)} pages — ${cost:.4f}"
+            st.session_state.logs.append(log_entry)
+
+            # Move to review mode
+            st.session_state.translation_status = "reviewing"
+            st.rerun()
+
+        except anthropic.AuthenticationError:
+            st.error("❌ Invalid API key. Please check your Anthropic API key in the sidebar.")
+            st.session_state.translation_status = "reviewing"
+        except anthropic.NotFoundError as e:
+            st.error(f"❌ Model not found: {model}. Error: {str(e)}")
+            st.session_state.translation_status = "reviewing"
+        except Exception as e:
+            log_entry = f"❌ Batch {batch_idx + 1}: Error — {str(e)}"
+            st.session_state.logs.append(log_entry)
+            st.error(f"Batch {batch_idx + 1} failed: {e}")
+            st.session_state.translation_status = "reviewing"
+
+    # ─── REVIEW MODE ───
+    if status == "reviewing" and st.session_state.batch_result:
+        batch_num = st.session_state.current_batch
+        st.success(f"✅ **Batch {batch_num}/{num_batches} Complete** — Review the translation below, then continue or download.")
+
+        # Show translated text for review
+        st.markdown("### 📝 Review Translation")
+        with st.expander(f"📖 Batch {batch_num} — Translated Pages (click to expand)", expanded=True):
+            for page_data in st.session_state.batch_result:
+                st.markdown(f"**━━━ পৃষ্ঠা {page_data['page']} ━━━**")
+                st.markdown(page_data["content"])
+                st.markdown("---")
+
+        # Download current progress as DOCX
+        st.markdown("### 📥 Download")
+        col_dl1, col_dl2 = st.columns(2)
+
+        with col_dl1:
+            # Download all translated so far
+            if st.session_state.all_translated:
+                docx_buffer = build_docx(
+                    st.session_state.all_translated,
+                    book_title or "Translated Book",
+                    book_author or "Author"
+                )
+                total_pages_done = len(st.session_state.all_translated)
+                filename = f"{book_title or 'translation'}_pages_1-{total_pages_done}.docx"
+                st.download_button(
+                    label=f"📥 Download All ({total_pages_done} pages so far)",
+                    data=docx_buffer,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
+
+        with col_dl2:
+            # Download only this batch
+            if st.session_state.batch_result:
+                batch_docx = build_docx(
+                    st.session_state.batch_result,
+                    book_title or "Translated Book",
+                    book_author or "Author"
+                )
+                st.download_button(
+                    label=f"📥 Download Batch {batch_num} Only",
+                    data=batch_docx,
+                    file_name=f"batch_{batch_num}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
+
+        # Progress summary
+        remaining = num_batches - batch_num
+        st.markdown(f"""
+        <div class="cost-box">
+            📊 <strong>Progress:</strong> {batch_num}/{num_batches} batches done |
+            📄 {len(st.session_state.all_translated)} pages translated |
+            📦 {remaining} batches remaining |
+            💰 Total cost so far: <strong>${st.session_state.total_cost:.4f}</strong>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ─── COMPLETE ───
+    if status == "complete" or (status == "reviewing" and st.session_state.current_batch >= num_batches):
+        st.session_state.translation_status = "complete"
+
+        st.balloons()
+        st.markdown(f"""
+        <div class="success-box">
+            <h3 style="color: #4CAF50; margin-top:0;">🎉 Translation Complete!</h3>
+            <p>📄 Total pages: <strong>{len(st.session_state.all_translated)}</strong></p>
+            <p>📦 Batches: <strong>{st.session_state.current_batch}</strong></p>
+            <p>💰 Total cost: <strong>${st.session_state.total_cost:.4f}</strong></p>
+            <p>🔤 Tokens: {st.session_state.total_input_tokens:,} input + {st.session_state.total_output_tokens:,} output</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Final download
+        if st.session_state.all_translated:
+            docx_buffer = build_docx(
+                st.session_state.all_translated,
+                book_title or "Translated Book",
+                book_author or "Author"
+            )
+            st.download_button(
+                label="📥 Download Complete Translation (DOCX)",
+                data=docx_buffer,
+                file_name=f"{book_title or 'translation'}_complete.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                type="primary",
+            )
+
+    # ─── LOGS ───
+    if st.session_state.logs:
+        with st.expander("📋 Translation Logs", expanded=False):
+            for log in st.session_state.logs:
+                if log.startswith("✅"):
+                    st.success(log)
+                else:
+                    st.error(log)
 
 else:
-    # Welcome state
+    # Welcome screen
     st.markdown("""
     ### 👋 How to Use
 
-    1. **Enter your API Key** in the sidebar (get one at [console.anthropic.com](https://console.anthropic.com))
-    2. **Upload** your English PDF book above
-    3. **Set** book title, author, and page range in the sidebar
-    4. **Click** "Start Translation" and wait
-    5. **Download** the translated Bangla DOCX
+    1. **Enter your API Key** in the sidebar (get from [console.anthropic.com](https://console.anthropic.com))
+    2. **Upload** your English PDF book
+    3. **Set** book title, author, page range, and batch size in the sidebar
+    4. **Click** "Start Translation" — it translates one batch then **PAUSES**
+    5. **Review** the translation preview on screen
+    6. **Download** the DOCX or click "Continue" for the next batch
+    7. **Repeat** until all pages are done
 
     ---
 
-    ### 💰 Cost Guide
+    ### ⭐ What's New in v2.0
 
-    | Model | Quality | Cost per 100 pages |
-    |-------|---------|-------------------|
-    | Sonnet 4.5 | ★★★★★ Best | ~$2-5 |
-    | Haiku 4.5 | ★★★★ Good | ~$0.30-1.50 |
+    - **Batch Review:** Translation pauses after every 5 or 10 pages (your choice)
+    - **Preview:** See translated text on screen before downloading
+    - **Partial Download:** Download DOCX after each batch or wait for complete book
+    - **Fixed Models:** Updated to latest Claude model versions
 
     ---
 
@@ -543,7 +662,7 @@ else:
 # Footer
 st.divider()
 st.markdown(
-    "<p style='text-align:center; color:#999; font-size:0.8rem;'>"
-    "অদম্য প্রেস Book Translator v1.0 | Powered by Claude AI | Online Tech Academy</p>",
+    "<p style='text-align:center; color:#666; font-size:0.8rem;'>"
+    "অদম্য প্রেস Book Translator v2.0 | Powered by Claude AI | Online Tech Academy</p>",
     unsafe_allow_html=True
 )
